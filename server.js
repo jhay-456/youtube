@@ -5,7 +5,18 @@ const rateLimit = require('express-rate-limit');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
+
+// On Windows, winget packages may not be in PATH if the terminal pre-dates the install.
+// Inject known install locations so spawn() always finds yt-dlp and ffmpeg.
+const WINGET_BASE = path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages');
+const EXTRA_PATHS = [
+  path.join(WINGET_BASE, 'yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe'),
+  path.join(WINGET_BASE, 'yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe', 'ffmpeg-N-124716-g054dffd133-win64-gpl', 'bin'),
+  path.join(WINGET_BASE, 'Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe', 'ffmpeg-8.1.1-full_build', 'bin'),
+];
+const SPAWN_ENV = { ...process.env, PATH: `${process.env.PATH};${EXTRA_PATHS.join(';')}` };
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -108,7 +119,7 @@ app.post('/api/info', apiLimiter, (req, res) => {
     '--no-warnings',
     '--extractor-args', 'youtube:player_client=android,ios',
     url,
-  ]);
+  ], { env: SPAWN_ENV });
 
   let stdout = '';
   let stderr = '';
@@ -117,7 +128,9 @@ app.post('/api/info', apiLimiter, (req, res) => {
   proc.stderr.on('data', chunk => { stderr += chunk; });
 
   proc.on('close', code => {
+    if (res.headersSent) return;
     if (code !== 0) {
+      console.error('[/api/info] yt-dlp exit code:', code, '\nstderr:', stderr.slice(0, 500));
       const msg = stderr.includes('Video unavailable')
         ? 'This video is unavailable.'
         : stderr.includes('Private video')
@@ -155,12 +168,15 @@ app.post('/api/info', apiLimiter, (req, res) => {
           ? availableResolutions
           : [360, 480, 720, 1080], // fallback if formats not exposed
       });
-    } catch {
+    } catch (e) {
+      console.error('[/api/info] JSON parse error:', e.message, '\nstdout preview:', stdout.slice(0, 200));
       res.status(500).json({ error: 'Failed to parse video information.' });
     }
   });
 
   proc.on('error', err => {
+    console.error('[/api/info] spawn error:', err.code, err.message);
+    if (res.headersSent) return;
     if (err.code === 'ENOENT') {
       res.status(500).json({ error: 'yt-dlp is not installed. See README for setup instructions.' });
     } else {
@@ -220,7 +236,7 @@ app.post('/api/download', downloadLimiter, (req, res) => {
     ? ['-x', '--audio-format', 'mp3', '--audio-quality', `${quality}K`]
     : ['-f', videoFormat, '--merge-output-format', 'mp4'];
 
-  const proc = spawn('yt-dlp', [...baseArgs, ...mediaArgs, url]);
+  const proc = spawn('yt-dlp', [...baseArgs, ...mediaArgs, url], { env: SPAWN_ENV });
   let killed = false;
 
   // For video, yt-dlp downloads video stream then audio stream separately before merging.
