@@ -124,23 +124,24 @@ function setIndeterminate(label) {
 // ── Resolution Options ────────────────────────────────────────────────────────
 
 const RES_META = {
-  360:  { kbps: '360',  unit: 'p',  note: 'Small file' },
-  480:  { kbps: '480',  unit: 'p',  note: 'SD' },
-  720:  { kbps: '720',  unit: 'p',  note: 'HD' },
-  1080: { kbps: '1080', unit: 'p',  note: 'Full HD' },
-  1440: { kbps: '1440', unit: 'p',  note: '2K' },
-  2160: { kbps: '4K',   unit: '',   note: 'Ultra HD' },
+  best: { kbps: 'Best', unit: '',  note: 'Auto-max' },
+  360:  { kbps: '360',  unit: 'p', note: 'Small file' },
+  480:  { kbps: '480',  unit: 'p', note: 'SD' },
+  720:  { kbps: '720',  unit: 'p', note: 'HD' },
+  1080: { kbps: '1080', unit: 'p', note: 'Full HD' },
+  1440: { kbps: '1440', unit: 'p', note: '2K' },
+  2160: { kbps: '4K',   unit: '',  note: 'Ultra HD' },
 };
 
 function renderResolutionOptions(resolutions) {
-  // Default: prefer 1080, otherwise highest available
-  const preferred = resolutions.includes(1080) ? 1080 : resolutions[resolutions.length - 1];
+  // Always lead with "Best" — no cap, yt-dlp picks the highest quality available
+  const allOptions = ['best', ...resolutions];
 
-  resolutionSelector.innerHTML = resolutions.map(r => {
+  resolutionSelector.innerHTML = allOptions.map(r => {
     const { kbps, unit, note } = RES_META[r] || { kbps: `${r}`, unit: 'p', note: '' };
     return `
       <label class="quality-opt">
-        <input type="radio" name="resolution" value="${r}"${r === preferred ? ' checked' : ''} />
+        <input type="radio" name="resolution" value="${r}"${r === 'best' ? ' checked' : ''} />
         <span class="quality-label">
           <span class="quality-kbps">${kbps}</span>
           <span class="quality-unit">${unit}</span>

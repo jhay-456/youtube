@@ -184,8 +184,8 @@ app.post('/api/download', downloadLimiter, (req, res) => {
   if (mediaType === 'audio' && !new Set(['128', '192', '320']).has(quality)) {
     return res.status(400).json({ error: 'Quality must be 128, 192, or 320.' });
   }
-  if (mediaType === 'video' && !new Set(['360', '480', '720', '1080', '1440', '2160']).has(resolution)) {
-    return res.status(400).json({ error: 'Resolution must be 360, 480, 720, 1080, 1440, or 2160.' });
+  if (mediaType === 'video' && !new Set(['360', '480', '720', '1080', '1440', '2160', 'best']).has(resolution)) {
+    return res.status(400).json({ error: 'Resolution must be 360, 480, 720, 1080, 1440, 2160, or best.' });
   }
 
   const ext = mediaType === 'video' ? 'mp4' : 'mp3';
@@ -209,12 +209,16 @@ app.post('/api/download', downloadLimiter, (req, res) => {
     '-o', outputTemplate,
   ];
 
+  // Build yt-dlp format string for video.
+  // Prefer MP4 video + M4A audio so ffmpeg can stream-copy without re-encoding (faster, lossless).
+  // "best" = no height cap — yt-dlp picks the highest quality the video offers (up to 4K/8K).
+  const videoFormat = resolution === 'best'
+    ? 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+    : `bestvideo[height<=${resolution}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]`;
+
   const mediaArgs = mediaType === 'audio'
     ? ['-x', '--audio-format', 'mp3', '--audio-quality', `${quality}K`]
-    : [
-        '-f', `bestvideo[height<=${resolution}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]`,
-        '--merge-output-format', 'mp4',
-      ];
+    : ['-f', videoFormat, '--merge-output-format', 'mp4'];
 
   const proc = spawn('yt-dlp', [...baseArgs, ...mediaArgs, url]);
   let killed = false;
