@@ -1,0 +1,8 @@
+node_modules
+temp
+.git
+*.mp3
+*.mp4
+*.webm
+*.m4a
+*.opus

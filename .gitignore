@@ -1,0 +1,8 @@
+node_modules/
+temp/
+*.mp3
+*.webm
+*.m4a
+*.opus
+.env
+.DS_Store
