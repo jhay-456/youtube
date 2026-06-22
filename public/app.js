@@ -13,10 +13,11 @@ const errorBanner   = document.getElementById('errorBanner');
 const metaSection   = document.getElementById('metaSection');
 const progressSection = document.getElementById('progressSection');
 const resultSection = document.getElementById('resultSection');
-const audioOptions  = document.getElementById('audioOptions');
-const videoOptions  = document.getElementById('videoOptions');
-const fmtAudio      = document.getElementById('fmtAudio');
-const fmtVideo      = document.getElementById('fmtVideo');
+const audioOptions       = document.getElementById('audioOptions');
+const videoOptions       = document.getElementById('videoOptions');
+const resolutionSelector = document.getElementById('resolutionSelector');
+const fmtAudio           = document.getElementById('fmtAudio');
+const fmtVideo           = document.getElementById('fmtVideo');
 
 const thumbnail     = document.getElementById('thumbnail');
 const videoTitle    = document.getElementById('videoTitle');
@@ -120,6 +121,35 @@ function setIndeterminate(label) {
   progressPhase.textContent = '';
 }
 
+// ── Resolution Options ────────────────────────────────────────────────────────
+
+const RES_META = {
+  360:  { kbps: '360',  unit: 'p',  note: 'Small file' },
+  480:  { kbps: '480',  unit: 'p',  note: 'SD' },
+  720:  { kbps: '720',  unit: 'p',  note: 'HD' },
+  1080: { kbps: '1080', unit: 'p',  note: 'Full HD' },
+  1440: { kbps: '1440', unit: 'p',  note: '2K' },
+  2160: { kbps: '4K',   unit: '',   note: 'Ultra HD' },
+};
+
+function renderResolutionOptions(resolutions) {
+  // Default: prefer 1080, otherwise highest available
+  const preferred = resolutions.includes(1080) ? 1080 : resolutions[resolutions.length - 1];
+
+  resolutionSelector.innerHTML = resolutions.map(r => {
+    const { kbps, unit, note } = RES_META[r] || { kbps: `${r}`, unit: 'p', note: '' };
+    return `
+      <label class="quality-opt">
+        <input type="radio" name="resolution" value="${r}"${r === preferred ? ' checked' : ''} />
+        <span class="quality-label">
+          <span class="quality-kbps">${kbps}</span>
+          <span class="quality-unit">${unit}</span>
+          <span class="quality-note">${note}</span>
+        </span>
+      </label>`;
+  }).join('');
+}
+
 // ── Parse SSE from fetch ReadableStream ───────────────────────────────────────
 
 async function* streamSSE(response) {
@@ -195,6 +225,9 @@ fetchBtn.addEventListener('click', async () => {
     } else {
       hide(datePill);
     }
+
+    // Populate video resolution options based on what this video actually supports
+    renderResolutionOptions(data.availableResolutions || [360, 480, 720, 1080]);
 
     show(metaSection);
   } catch (err) {

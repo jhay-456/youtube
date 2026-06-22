@@ -449,8 +449,8 @@ a:hover { text-decoration: underline; }
   gap: 8px;
 }
 
-.quality-selector--4 {
-  grid-template-columns: repeat(4, 1fr);
+.quality-selector--dynamic {
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
 }
 
 .quality-opt { cursor: pointer; }

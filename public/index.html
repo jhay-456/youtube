@@ -132,43 +132,10 @@
           </div>
         </div>
 
-        <!-- Video Resolution -->
+        <!-- Video Resolution (options injected by app.js based on what the video supports) -->
         <div class="quality-section" id="videoOptions" hidden>
           <label class="section-label">Video Quality</label>
-          <div class="quality-selector quality-selector--4" role="group" aria-label="Video resolution">
-            <label class="quality-opt">
-              <input type="radio" name="resolution" value="360" />
-              <span class="quality-label">
-                <span class="quality-kbps">360</span>
-                <span class="quality-unit">p</span>
-                <span class="quality-note">Small file</span>
-              </span>
-            </label>
-            <label class="quality-opt">
-              <input type="radio" name="resolution" value="480" />
-              <span class="quality-label">
-                <span class="quality-kbps">480</span>
-                <span class="quality-unit">p</span>
-                <span class="quality-note">SD</span>
-              </span>
-            </label>
-            <label class="quality-opt">
-              <input type="radio" name="resolution" value="720" checked />
-              <span class="quality-label">
-                <span class="quality-kbps">720</span>
-                <span class="quality-unit">p</span>
-                <span class="quality-note">HD</span>
-              </span>
-            </label>
-            <label class="quality-opt">
-              <input type="radio" name="resolution" value="1080" />
-              <span class="quality-label">
-                <span class="quality-kbps">1080</span>
-                <span class="quality-unit">p</span>
-                <span class="quality-note">Full HD</span>
-              </span>
-            </label>
-          </div>
+          <div class="quality-selector quality-selector--dynamic" id="resolutionSelector" role="group" aria-label="Video resolution"></div>
         </div>
 
         <button class="btn btn-accent" id="downloadBtn">

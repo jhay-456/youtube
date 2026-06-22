@@ -128,6 +128,18 @@ app.post('/api/info', apiLimiter, (req, res) => {
 
     try {
       const info = JSON.parse(stdout);
+
+      // Derive available video resolutions from the format list
+      const STANDARD_HEIGHTS = [360, 480, 720, 1080, 1440, 2160];
+      const videoHeights = new Set(
+        (info.formats || [])
+          .filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
+          .map(f => f.height)
+      );
+      const availableResolutions = STANDARD_HEIGHTS.filter(r =>
+        [...videoHeights].some(h => Math.abs(h - r) <= 10)
+      );
+
       res.json({
         title: info.title || 'Unknown Title',
         thumbnail: info.thumbnail || '',
@@ -139,6 +151,9 @@ app.post('/api/info', apiLimiter, (req, res) => {
           ? `${info.upload_date.slice(0, 4)}-${info.upload_date.slice(4, 6)}-${info.upload_date.slice(6, 8)}`
           : null,
         filesize: info.filesize_approx || null,
+        availableResolutions: availableResolutions.length > 0
+          ? availableResolutions
+          : [360, 480, 720, 1080], // fallback if formats not exposed
       });
     } catch {
       res.status(500).json({ error: 'Failed to parse video information.' });
@@ -169,8 +184,8 @@ app.post('/api/download', downloadLimiter, (req, res) => {
   if (mediaType === 'audio' && !new Set(['128', '192', '320']).has(quality)) {
     return res.status(400).json({ error: 'Quality must be 128, 192, or 320.' });
   }
-  if (mediaType === 'video' && !new Set(['360', '480', '720', '1080']).has(resolution)) {
-    return res.status(400).json({ error: 'Resolution must be 360, 480, 720, or 1080.' });
+  if (mediaType === 'video' && !new Set(['360', '480', '720', '1080', '1440', '2160']).has(resolution)) {
+    return res.status(400).json({ error: 'Resolution must be 360, 480, 720, 1080, 1440, or 2160.' });
   }
 
   const ext = mediaType === 'video' ? 'mp4' : 'mp3';
