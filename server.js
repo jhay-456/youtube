@@ -109,11 +109,23 @@ function buildInfoArgs(url) {
 }
 
 function buildVideoFormat(resolution) {
+  // Prefer H.264 (avc1) so the output plays in QuickTime on Mac.
+  // VP9/AV1 is YouTube's default for 1080p+ but QuickTime doesn't support it.
+  // We fall back to whatever codec is available if H.264 isn't offered at that resolution.
   if (resolution === 'best') {
-    return 'bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+    return [
+      'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]',
+      'bestvideo[vcodec^=avc1]+bestaudio',
+      'bestvideo+bestaudio[ext=m4a]',
+      'bestvideo+bestaudio',
+      'best',
+    ].join('/');
   }
   const h = resolution;
   return [
+    `bestvideo[height<=${h}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]`,
+    `bestvideo[height<=${h}][vcodec^=avc1]+bestaudio[ext=m4a]`,
+    `bestvideo[height<=${h}][vcodec^=avc1]+bestaudio`,
     `bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]`,
     `bestvideo[height<=${h}]+bestaudio[ext=m4a]`,
     `bestvideo[height<=${h}]+bestaudio`,
