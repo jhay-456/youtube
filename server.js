@@ -18,6 +18,11 @@ const EXTRA_PATHS = [
 ];
 const SPAWN_ENV = { ...process.env, PATH: `${process.env.PATH};${EXTRA_PATHS.join(';')}` };
 
+const COOKIES_FILE = path.join(__dirname, 'cookies.txt');
+function cookiesArgs() {
+  return fs.existsSync(COOKIES_FILE) ? ['--cookies', COOKIES_FILE] : [];
+}
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -28,7 +33,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 
 // ── Middleware ──────────────────────────────────────────────────────────────
 
-app.use(express.json({ limit: '1kb' }));
+app.use(express.json({ limit: '10kb' }));
 
 // Password protection — set AUTH_USER and AUTH_PASS env vars to enable
 if (process.env.AUTH_USER && process.env.AUTH_PASS) {
@@ -103,6 +108,34 @@ setInterval(() => {
   });
 }, 60 * 60 * 1000);
 
+// ── Cookie Management ────────────────────────────────────────────────────────
+
+app.get('/api/cookies/status', (req, res) => {
+  res.json({ active: fs.existsSync(COOKIES_FILE) });
+});
+
+app.post('/api/cookies', express.text({ limit: '2mb', type: 'text/plain' }), (req, res) => {
+  const content = req.body;
+  if (typeof content !== 'string' || content.trim().length < 10) {
+    return res.status(400).json({ error: 'Invalid cookies file.' });
+  }
+  try {
+    fs.writeFileSync(COOKIES_FILE, content, 'utf8');
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Failed to save cookies.' });
+  }
+});
+
+app.delete('/api/cookies', (req, res) => {
+  try {
+    if (fs.existsSync(COOKIES_FILE)) fs.unlinkSync(COOKIES_FILE);
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Failed to remove cookies.' });
+  }
+});
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 // POST /api/info — fetch video metadata
@@ -117,7 +150,8 @@ app.post('/api/info', apiLimiter, (req, res) => {
     '--dump-json',
     '--no-playlist',
     '--no-warnings',
-    '--extractor-args', 'youtube:player_client=android,ios',
+    '--extractor-args', 'youtube:player_client=android_creator',
+    ...cookiesArgs(),
     url,
   ], { env: SPAWN_ENV });
 
@@ -220,17 +254,18 @@ app.post('/api/download', downloadLimiter, (req, res) => {
   const baseArgs = [
     '--no-playlist',
     '--no-warnings',
-    '--extractor-args', 'youtube:player_client=android,ios',
+    '--extractor-args', 'youtube:player_client=android_creator',
     '--newline',
     '-o', outputTemplate,
+    ...cookiesArgs(),
   ];
 
   // Build yt-dlp format string for video.
   // Prefer MP4 video + M4A audio so ffmpeg can stream-copy without re-encoding (faster, lossless).
   // "best" = no height cap — yt-dlp picks the highest quality the video offers (up to 4K/8K).
   const videoFormat = resolution === 'best'
-    ? 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
-    : `bestvideo[height<=${resolution}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]`;
+    ? 'bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+    : `bestvideo[height<=${resolution}]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]`;
 
   const mediaArgs = mediaType === 'audio'
     ? ['-x', '--audio-format', 'mp3', '--audio-quality', `${quality}K`]
