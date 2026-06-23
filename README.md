@@ -1,9 +1,9 @@
-# MP3ify — YouTube Audio & Video Downloader
+# MP3ify — Media Downloader
 
-A personal, self-hosted web app for downloading YouTube content as **MP3** (audio) or **MP4** (video).
-Runs on your machine or a private server and is accessible from any device — phone, tablet, laptop.
+A personal, self-hosted web app for downloading audio or video from YouTube and other supported sites.
+Save as **MP3** (audio) or **MP4** (video). Runs on your machine or a private server and is accessible from any device — phone, tablet, laptop.
 
-> **For personal use only.** Downloading copyrighted content may violate YouTube's Terms of Service and applicable copyright law. This tool is intended for non-copyrighted or Creative Commons licensed content. You are solely responsible for how you use it.
+> **Personal use only.** Only download content you have the right to download. Downloading copyrighted material may violate the terms of service of the source platform and applicable copyright law. You are solely responsible for how you use this tool.
 
 ---
 
@@ -11,17 +11,20 @@ Runs on your machine or a private server and is accessible from any device — p
 
 - Download audio as **MP3** at 128 / 192 / 320 kbps
 - Download video as **MP4** — resolution options are dynamic (shows only what the video actually supports, up to **4K**)
+- **"Best" quality option** — lets yt-dlp auto-select the highest available resolution
+- Prefers **H.264** video codec for QuickTime / Mac compatibility (falls back to VP9/AV1 when H.264 isn't available at that resolution)
+- Supports **YouTube, Vimeo, SoundCloud, TikTok** and hundreds of other sites via yt-dlp
+- **Cookie upload** — upload a `cookies.txt` to access login-gated or member-only content
 - Live progress bar with ETA during download and conversion
 - Video metadata preview — thumbnail, title, channel, duration, view count
 - Dark / light mode toggle with local storage persistence
 - Password protection for private server deployments
 - Responsive design — works on mobile
+- Runs on **macOS and Windows**
 
 ---
 
 ## System Requirements
-
-These must be installed before running:
 
 ### yt-dlp
 
@@ -29,11 +32,11 @@ These must be installed before running:
 # macOS
 brew install yt-dlp
 
-# pip (cross-platform)
-pip install yt-dlp
+# Windows
+winget install yt-dlp.yt-dlp
 
-# Self-update after installing
-yt-dlp -U
+# Cross-platform (pip)
+pip install yt-dlp
 ```
 
 ### ffmpeg
@@ -41,6 +44,9 @@ yt-dlp -U
 ```bash
 # macOS
 brew install ffmpeg
+
+# Windows
+winget install Gyan.FFmpeg
 
 # Ubuntu / Debian
 sudo apt install ffmpeg
@@ -56,6 +62,8 @@ ffmpeg -version
 ### Node.js
 
 Node.js **v18 or newer** is required. Check with `node --version`.
+
+> **Windows note:** After installing yt-dlp or ffmpeg via winget, restart your terminal so the new PATH takes effect. The server also injects the winget packages directory into the spawn environment automatically, so it will find them even if your terminal PATH hasn't refreshed yet.
 
 ---
 
@@ -81,7 +89,7 @@ npm run dev
 
 ## Usage
 
-1. Paste a YouTube URL (standard watch URL, short URL, or Shorts)
+1. Paste a URL (YouTube, Vimeo, SoundCloud, TikTok, or any yt-dlp-supported site)
 2. Click **Fetch Info** — a preview card shows the thumbnail, title, and metadata
 3. Choose **Audio MP3** or **Video MP4**
 4. Select quality (audio bitrate or video resolution — only what the video supports is shown)
@@ -90,9 +98,33 @@ npm run dev
 
 ---
 
+## Cookie Upload (for member-only content)
+
+Some sites require you to be logged in to access HD or member-only content.
+
+1. Export your browser cookies as a Netscape-format `cookies.txt` file (use a browser extension like [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc))
+2. Click the **Cookies** button in the header
+3. Select your `cookies.txt` file
+4. The green dot indicates cookies are active — all subsequent downloads will use them
+5. Click the ✕ on the active badge to remove cookies
+
+---
+
+## QuickTime Compatibility (Mac)
+
+The app prefers H.264 video so files open in QuickTime Player without issues.
+
+- **720p and below** — H.264 almost always available ✓
+- **1080p** — H.264 usually available ✓
+- **1440p / 4K** — YouTube rarely offers H.264 at these resolutions; the file will be VP9/AV1
+
+If a file won't open in QuickTime, install **[IINA](https://iina.io/)** (free, Mac-native) or **VLC** — both play VP9/AV1 without any issues.
+
+---
+
 ## Deploying for Multi-Device Access
 
-If you want to use this from your phone or other devices, deploy it to a private server.
+Deploy to a private server to use the app from your phone or other devices.
 
 ### Option A — Railway (easiest)
 
@@ -161,10 +193,8 @@ docker run -p 3001:3001 \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3001` | HTTP port |
-| `AUTH_USER` | — | Basic auth username — if unset, no login required |
+| `AUTH_USER` | — | Basic auth username — both `AUTH_USER` and `AUTH_PASS` must be set together |
 | `AUTH_PASS` | — | Basic auth password |
-
-Both `AUTH_USER` and `AUTH_PASS` must be set together to enable password protection.
 
 ---
 
@@ -172,7 +202,7 @@ Both `AUTH_USER` and `AUTH_PASS` must be set together to enable password protect
 
 ### `POST /api/info`
 
-Fetch metadata for a YouTube URL.
+Fetch metadata for a URL.
 
 **Request**
 ```json
@@ -206,7 +236,7 @@ Start a download. Streams **Server-Sent Events** until done.
   "url": "https://www.youtube.com/watch?v=...",
   "mediaType": "audio",
   "quality": "192",
-  "resolution": "1080",
+  "resolution": "best",
   "title": "Video Title"
 }
 ```
@@ -215,7 +245,7 @@ Start a download. Streams **Server-Sent Events** until done.
 |-------|--------|
 | `mediaType` | `"audio"` or `"video"` |
 | `quality` | `"128"` / `"192"` / `"320"` (audio only) |
-| `resolution` | `"360"` / `"480"` / `"720"` / `"1080"` / `"1440"` / `"2160"` (video only) |
+| `resolution` | `"360"` / `"480"` / `"720"` / `"1080"` / `"1440"` / `"2160"` / `"best"` (video only) |
 
 **SSE events streamed in response**
 
@@ -235,6 +265,16 @@ Download the converted file. Deleted from the server immediately after streaming
 
 ---
 
+### Cookie routes
+
+| Method | Path | Body | Purpose |
+|--------|------|------|---------|
+| `GET` | `/api/cookies/status` | — | Returns `{ "active": true/false }` |
+| `POST` | `/api/cookies` | Netscape cookies.txt as `text/plain` | Upload cookies |
+| `DELETE` | `/api/cookies` | — | Remove active cookies |
+
+---
+
 ## Rate Limits
 
 | Endpoint | Limit |
@@ -246,12 +286,10 @@ Download the converted file. Deleted from the server immediately after streaming
 
 ## Claude Code Commands
 
-This project includes custom slash commands for Claude Code:
-
 | Command | Description |
 |---------|-------------|
 | `/dev` | Check system deps and start the dev server |
-| `/check-deps` | Verify yt-dlp, ffmpeg, and Node.js are all installed |
+| `/check-deps` | Verify yt-dlp, ffmpeg, and Node.js are installed (with install commands for macOS/Windows/Linux) |
 | `/update-yt-dlp` | Update yt-dlp to the latest version |
 
 ---
@@ -271,7 +309,7 @@ This project includes custom slash commands for Claude Code:
 ├── .claude/
 │   └── commands/          Custom Claude Code slash commands
 ├── package.json
-└── temp/                  Temp download files (auto-cleaned)
+└── temp/                  Temp download files (auto-cleaned hourly)
 ```
 
 ---
@@ -279,13 +317,19 @@ This project includes custom slash commands for Claude Code:
 ## Troubleshooting
 
 **403 Forbidden from YouTube**
-yt-dlp defaults to the web client which YouTube blocks. The app already passes `--extractor-args youtube:player_client=android,ios` to use the mobile clients instead. If you still get 403, run `yt-dlp -U` to update to the latest version.
+yt-dlp defaults to the web client which YouTube blocks. The app passes `--extractor-args youtube:player_client=android_creator` automatically. If you still see 403, run `/update-yt-dlp` to get the latest version.
+
+**File won't open in QuickTime**
+YouTube's 1440p and 4K streams use VP9/AV1 codec which QuickTime doesn't support. Use [IINA](https://iina.io/) or VLC instead. For 1080p and below, the app prefers H.264 which QuickTime handles fine.
 
 **"Unknown server error" on download**
-Usually caused by non-ASCII characters (Thai, Japanese, etc.) in the filename being put raw into HTTP headers. This is fixed in the current version via RFC 5987 header encoding. If you see it, make sure you're running the latest code.
+Caused by non-ASCII characters (Thai, Japanese, etc.) in the filename going into HTTP headers raw. This is fixed in the current version via RFC 5987 encoding.
 
 **Video quality option not showing 4K**
-The video doesn't have a 4K version available. Resolution options are dynamic — only resolutions the video actually has are shown.
+The video doesn't have a 4K version available. Resolution options are dynamic — only what the video actually has is shown.
 
-**yt-dlp not found**
-Install it with `brew install yt-dlp` (macOS) or `pip install yt-dlp`, then restart the server.
+**yt-dlp not found (Windows)**
+After installing via winget, restart your terminal. The server also searches the winget packages directory automatically, but a terminal restart ensures your system PATH is updated.
+
+**yt-dlp not found (macOS)**
+Install with `brew install yt-dlp` then restart the server.
