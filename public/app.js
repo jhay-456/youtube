@@ -1,211 +1,6 @@
 'use strict';
 
-// ── DOM References ────────────────────────────────────────────────────────────
-
-const urlInput      = document.getElementById('urlInput');
-const clearBtn      = document.getElementById('clearBtn');
-const fetchBtn      = document.getElementById('fetchBtn');
-const downloadBtn   = document.getElementById('downloadBtn');
-const downloadBtnLabel = document.getElementById('downloadBtnLabel');
-const resetBtn      = document.getElementById('resetBtn');
-const themeToggle   = document.getElementById('themeToggle');
-const errorBanner   = document.getElementById('errorBanner');
-const metaSection   = document.getElementById('metaSection');
-const progressSection = document.getElementById('progressSection');
-const resultSection = document.getElementById('resultSection');
-const audioOptions       = document.getElementById('audioOptions');
-const videoOptions       = document.getElementById('videoOptions');
-const resolutionSelector = document.getElementById('resolutionSelector');
-const fmtAudio           = document.getElementById('fmtAudio');
-const fmtVideo           = document.getElementById('fmtVideo');
-
-const cookieFileInput = document.getElementById('cookieFileInput');
-const cookieUploadBtn = document.getElementById('cookieUploadBtn');
-const cookieActiveBar = document.getElementById('cookieActiveBar');
-const cookieRemoveBtn = document.getElementById('cookieRemoveBtn');
-
-const thumbnail     = document.getElementById('thumbnail');
-const videoTitle    = document.getElementById('videoTitle');
-const channelName   = document.getElementById('channelName');
-const durationPill  = document.getElementById('durationPill');
-const viewsPill     = document.getElementById('viewsPill');
-const datePill      = document.getElementById('datePill');
-
-const progressBar   = document.getElementById('progressBar');
-const progressLabel = document.getElementById('progressLabel');
-const progressPct   = document.getElementById('progressPct');
-const progressEta   = document.getElementById('progressEta');
-const progressPhase = document.getElementById('progressPhase');
-const progressTrack = document.querySelector('.progress-track');
-const cancelBtn     = document.getElementById('cancelBtn');
-const downloadLink  = document.getElementById('downloadLink');
-const resultFilename = document.getElementById('resultFilename');
-
-// ── State ─────────────────────────────────────────────────────────────────────
-
-let currentTitle    = '';
-let abortController = null;
-let mediaType       = 'audio'; // 'audio' | 'video'
-let etaSeconds      = null;
-let etaInterval     = null;
-
-// ── Theme ─────────────────────────────────────────────────────────────────────
-
-const savedTheme = localStorage.getItem('theme') || 'dark';
-document.documentElement.setAttribute('data-theme', savedTheme);
-
-themeToggle.addEventListener('click', () => {
-  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('theme', next);
-});
-
-// ── Cookie Management ─────────────────────────────────────────────────────────
-
-async function refreshCookieStatus() {
-  try {
-    const res = await fetch('/api/cookies/status');
-    const { active } = await res.json();
-    cookieUploadBtn.hidden = active;
-    cookieActiveBar.hidden = !active;
-  } catch {}
-}
-
-refreshCookieStatus();
-
-cookieFileInput.addEventListener('change', async () => {
-  const file = cookieFileInput.files[0];
-  if (!file) return;
-  const text = await file.text();
-  const res = await fetch('/api/cookies', {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: text,
-  });
-  if (res.ok) {
-    refreshCookieStatus();
-  } else {
-    const data = await res.json().catch(() => ({}));
-    showError(data.error || 'Failed to upload cookies.');
-  }
-  cookieFileInput.value = '';
-});
-
-cookieRemoveBtn.addEventListener('click', async () => {
-  await fetch('/api/cookies', { method: 'DELETE' });
-  refreshCookieStatus();
-});
-
-// ── Format Toggle ─────────────────────────────────────────────────────────────
-
-[fmtAudio, fmtVideo].forEach(btn => {
-  btn.addEventListener('click', () => {
-    mediaType = btn.dataset.fmt;
-    fmtAudio.classList.toggle('active', mediaType === 'audio');
-    fmtVideo.classList.toggle('active', mediaType === 'video');
-    audioOptions.hidden = mediaType !== 'audio';
-    videoOptions.hidden = mediaType !== 'video';
-    downloadBtnLabel.textContent = mediaType === 'audio' ? 'Download MP3' : 'Download MP4';
-  });
-});
-
-// ── URL Input Helpers ─────────────────────────────────────────────────────────
-
-urlInput.addEventListener('input', () => {
-  clearBtn.hidden = urlInput.value.length === 0;
-  if (errorBanner.hidden === false) hideError();
-});
-
-urlInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') fetchBtn.click();
-});
-
-clearBtn.addEventListener('click', () => {
-  urlInput.value = '';
-  clearBtn.hidden = true;
-  urlInput.focus();
-  hideError();
-  hide(metaSection);
-  hide(progressSection);
-  hide(resultSection);
-});
-
-// ── Utility ───────────────────────────────────────────────────────────────────
-
-function show(el) { el.hidden = false; }
-function hide(el) { el.hidden = true; }
-
-function showError(msg) {
-  errorBanner.textContent = msg;
-  show(errorBanner);
-}
-
-function hideError() { hide(errorBanner); }
-
-function setLoading(btn, loading) {
-  const text   = btn.querySelector('.btn-text');
-  const spinner = btn.querySelector('.btn-spinner');
-  btn.disabled = loading;
-  if (text)    text.hidden   = loading;
-  if (spinner) spinner.hidden = !loading;
-}
-
-function setProgress(pct, label, phase, eta) {
-  progressBar.classList.remove('indeterminate');
-  progressBar.style.width = `${pct}%`;
-  progressTrack.setAttribute('aria-valuenow', Math.round(pct));
-  if (label) progressLabel.textContent = label;
-  if (phase !== undefined) progressPhase.textContent = phase;
-  progressPct.textContent = pct < 100 ? `${Math.round(pct)}%` : '';
-  if (eta) updateEta(eta);
-}
-
-function setIndeterminate(label) {
-  progressBar.classList.add('indeterminate');
-  progressPct.textContent = '';
-  if (label) progressLabel.textContent = label;
-  progressPhase.textContent = '';
-}
-
-function renderEta(secs) {
-  if (secs === null) { progressEta.textContent = ''; return; }
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  const str = m >= 60
-    ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${m}:${String(s).padStart(2, '0')}`;
-  const text = `ETA ${str}`;
-  if (progressEta.textContent === text) return;
-  progressEta.classList.remove('eta-tick');
-  void progressEta.offsetWidth;
-  progressEta.classList.add('eta-tick');
-  progressEta.textContent = text;
-}
-
-function updateEta(raw) {
-  if (!raw) return;
-  const parts = raw.split(':').map(Number);
-  if (parts.some(isNaN)) return;
-  etaSeconds = parts.length === 3
-    ? parts[0] * 3600 + parts[1] * 60 + parts[2]
-    : parts[0] * 60 + parts[1];
-  if (!etaInterval) {
-    etaInterval = setInterval(() => {
-      if (etaSeconds === null) return;
-      etaSeconds = Math.max(0, etaSeconds - 1);
-      renderEta(etaSeconds);
-    }, 1000);
-  }
-}
-
-function stopEta() {
-  clearInterval(etaInterval);
-  etaInterval = null;
-  etaSeconds  = null;
-  progressEta.textContent = '';
-}
-
-// ── Resolution Options ────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const RES_META = {
   best: { kbps: 'Best', unit: '',  note: 'Auto-max' },
@@ -217,30 +12,275 @@ const RES_META = {
   2160: { kbps: '4K',   unit: '',  note: 'Ultra HD' },
 };
 
-function renderResolutionOptions(resolutions) {
-  // Always lead with "Best" — no cap, yt-dlp picks the highest quality available
-  const allOptions = ['best', ...resolutions];
+// ── State ─────────────────────────────────────────────────────────────────────
 
-  resolutionSelector.innerHTML = allOptions.map(r => {
-    const { kbps, unit, note } = RES_META[r] || { kbps: `${r}`, unit: 'p', note: '' };
-    return `
-      <label class="quality-opt">
-        <input type="radio" name="resolution" value="${r}"${r === 'best' ? ' checked' : ''} />
-        <span class="quality-label">
-          <span class="quality-kbps">${kbps}</span>
-          <span class="quality-unit">${unit}</span>
-          <span class="quality-note">${note}</span>
-        </span>
-      </label>`;
-  }).join('');
+const state = {
+  title:           '',
+  mediaType:       'audio', // 'audio' | 'video'
+  abortController: null,
+  etaSeconds:      null,
+  etaInterval:     null,
+};
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+
+const el = {
+  // URL bar
+  urlInput:    document.getElementById('urlInput'),
+  clearBtn:    document.getElementById('clearBtn'),
+  fetchBtn:    document.getElementById('fetchBtn'),
+
+  // Error
+  errorBanner: document.getElementById('errorBanner'),
+
+  // Metadata
+  metaSection:  document.getElementById('metaSection'),
+  thumbnail:    document.getElementById('thumbnail'),
+  videoTitle:   document.getElementById('videoTitle'),
+  channelName:  document.getElementById('channelName'),
+  durationPill: document.getElementById('durationPill'),
+  viewsPill:    document.getElementById('viewsPill'),
+  datePill:     document.getElementById('datePill'),
+
+  // Format & quality
+  fmtAudio:          document.getElementById('fmtAudio'),
+  fmtVideo:          document.getElementById('fmtVideo'),
+  audioOptions:      document.getElementById('audioOptions'),
+  videoOptions:      document.getElementById('videoOptions'),
+  resolutionSelector: document.getElementById('resolutionSelector'),
+  downloadBtn:       document.getElementById('downloadBtn'),
+  downloadBtnLabel:  document.getElementById('downloadBtnLabel'),
+
+  // Progress
+  progressSection: document.getElementById('progressSection'),
+  progressBar:     document.getElementById('progressBar'),
+  progressTrack:   document.querySelector('.progress-track'),
+  progressLabel:   document.getElementById('progressLabel'),
+  progressPhase:   document.getElementById('progressPhase'),
+  progressPct:     document.getElementById('progressPct'),
+  progressEta:     document.getElementById('progressEta'),
+  cancelBtn:       document.getElementById('cancelBtn'),
+
+  // Result
+  resultSection:  document.getElementById('resultSection'),
+  resultHeading:  document.getElementById('resultHeading'),
+  resultFilename: document.getElementById('resultFilename'),
+  downloadLink:   document.getElementById('downloadLink'),
+  resetBtn:       document.getElementById('resetBtn'),
+
+  // Cookies
+  cookieFileInput: document.getElementById('cookieFileInput'),
+  cookieUploadBtn: document.getElementById('cookieUploadBtn'),
+  cookieActiveBar: document.getElementById('cookieActiveBar'),
+  cookieRemoveBtn: document.getElementById('cookieRemoveBtn'),
+
+  // Theme
+  themeToggle: document.getElementById('themeToggle'),
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function show(elem)  { elem.hidden = false; }
+function hide(elem)  { elem.hidden = true;  }
+
+function showError(msg) {
+  el.errorBanner.textContent = msg;
+  show(el.errorBanner);
 }
 
-// ── Parse SSE from fetch ReadableStream ───────────────────────────────────────
+function hideError() { hide(el.errorBanner); }
+
+function setLoading(btn, loading) {
+  btn.disabled = loading;
+  const text    = btn.querySelector('.btn-text');
+  const spinner = btn.querySelector('.btn-spinner');
+  if (text)    text.hidden    = loading;
+  if (spinner) spinner.hidden = !loading;
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+document.documentElement.setAttribute(
+  'data-theme',
+  localStorage.getItem('theme') || 'dark',
+);
+
+el.themeToggle.addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+});
+
+// ── Cookie management ─────────────────────────────────────────────────────────
+
+async function refreshCookieStatus() {
+  try {
+    const res     = await fetch('/api/cookies/status');
+    const { active } = await res.json();
+    el.cookieUploadBtn.hidden = active;
+    el.cookieActiveBar.hidden = !active;
+  } catch { /* server may not be ready yet */ }
+}
+
+refreshCookieStatus();
+
+el.cookieFileInput.addEventListener('change', async () => {
+  const file = el.cookieFileInput.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const res  = await fetch('/api/cookies', {
+      method:  'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body:    text,
+    });
+    if (res.ok) {
+      refreshCookieStatus();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showError(data.error || 'Failed to upload cookies.');
+    }
+  } catch {
+    showError('Network error uploading cookies.');
+  } finally {
+    el.cookieFileInput.value = '';
+  }
+});
+
+el.cookieRemoveBtn.addEventListener('click', async () => {
+  await fetch('/api/cookies', { method: 'DELETE' }).catch(() => {});
+  refreshCookieStatus();
+});
+
+// ── Format / media-type ───────────────────────────────────────────────────────
+
+function setMediaType(type) {
+  state.mediaType = type;
+  const isAudio   = type === 'audio';
+  el.fmtAudio.classList.toggle('active', isAudio);
+  el.fmtVideo.classList.toggle('active', !isAudio);
+  el.audioOptions.hidden      = !isAudio;
+  el.videoOptions.hidden      = isAudio;
+  el.downloadBtnLabel.textContent = isAudio ? 'Download MP3' : 'Download MP4';
+}
+
+el.fmtAudio.addEventListener('click', () => setMediaType('audio'));
+el.fmtVideo.addEventListener('click', () => setMediaType('video'));
+
+// ── URL input ─────────────────────────────────────────────────────────────────
+
+el.urlInput.addEventListener('input', () => {
+  el.clearBtn.hidden = el.urlInput.value.length === 0;
+  if (!el.errorBanner.hidden) hideError();
+});
+
+el.urlInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') el.fetchBtn.click();
+});
+
+el.clearBtn.addEventListener('click', () => {
+  el.urlInput.value  = '';
+  el.clearBtn.hidden = true;
+  el.urlInput.focus();
+  hideError();
+  hide(el.metaSection);
+  hide(el.progressSection);
+  hide(el.resultSection);
+});
+
+// ── Progress & ETA ────────────────────────────────────────────────────────────
+
+function setProgress(pct, label, phase, eta) {
+  el.progressBar.classList.remove('indeterminate');
+  el.progressBar.style.width = `${pct}%`;
+  el.progressTrack.setAttribute('aria-valuenow', Math.round(pct));
+  if (label !== undefined) el.progressLabel.textContent = label;
+  if (phase !== undefined) el.progressPhase.textContent = phase;
+  el.progressPct.textContent = pct < 100 ? `${Math.round(pct)}%` : '';
+  if (eta) updateEta(eta);
+}
+
+function setIndeterminate(label) {
+  el.progressBar.classList.add('indeterminate');
+  el.progressPct.textContent    = '';
+  el.progressPhase.textContent  = '';
+  if (label !== undefined) el.progressLabel.textContent = label;
+}
+
+function renderEta(secs) {
+  if (secs === null) { el.progressEta.textContent = ''; return; }
+  const h   = Math.floor(secs / 3600);
+  const m   = Math.floor((secs % 3600) / 60);
+  const s   = secs % 60;
+  const str = h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
+  const text = `ETA ${str}`;
+  if (el.progressEta.textContent === text) return;
+  el.progressEta.classList.remove('eta-tick');
+  void el.progressEta.offsetWidth; // reflow to restart animation
+  el.progressEta.classList.add('eta-tick');
+  el.progressEta.textContent = text;
+}
+
+function updateEta(raw) {
+  if (!raw) return;
+  const parts = raw.split(':').map(Number);
+  if (parts.some(isNaN)) return;
+  state.etaSeconds = parts.length === 3
+    ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+    : parts[0] * 60 + parts[1];
+  if (!state.etaInterval) {
+    state.etaInterval = setInterval(() => {
+      if (state.etaSeconds === null) return;
+      state.etaSeconds = Math.max(0, state.etaSeconds - 1);
+      renderEta(state.etaSeconds);
+    }, 1000);
+  }
+}
+
+function stopEta() {
+  clearInterval(state.etaInterval);
+  state.etaInterval        = null;
+  state.etaSeconds         = null;
+  el.progressEta.textContent = '';
+}
+
+// ── Resolution options ────────────────────────────────────────────────────────
+
+function renderResolutionOptions(resolutions) {
+  el.resolutionSelector.innerHTML = '';
+  for (const r of ['best', ...resolutions]) {
+    const meta = RES_META[r] || { kbps: String(r), unit: 'p', note: '' };
+
+    const input = document.createElement('input');
+    input.type    = 'radio';
+    input.name    = 'resolution';
+    input.value   = String(r);
+    input.checked = r === 'best';
+
+    const kbpsSpan = Object.assign(document.createElement('span'), { className: 'quality-kbps', textContent: meta.kbps });
+    const unitSpan = Object.assign(document.createElement('span'), { className: 'quality-unit', textContent: meta.unit });
+    const noteSpan = Object.assign(document.createElement('span'), { className: 'quality-note', textContent: meta.note });
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'quality-label';
+    labelSpan.append(kbpsSpan, unitSpan, noteSpan);
+
+    const label = document.createElement('label');
+    label.className = 'quality-opt';
+    label.append(input, labelSpan);
+
+    el.resolutionSelector.appendChild(label);
+  }
+}
+
+// ── SSE stream parser ─────────────────────────────────────────────────────────
 
 async function* streamSSE(response) {
-  const reader = response.body.getReader();
+  const reader  = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '';
+  let buffer    = '';
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -259,100 +299,95 @@ async function* streamSSE(response) {
   }
 }
 
-// ── Fetch Video Info ──────────────────────────────────────────────────────────
+// ── Fetch video info ──────────────────────────────────────────────────────────
 
-fetchBtn.addEventListener('click', async () => {
-  const url = urlInput.value.trim();
-  if (!url) { urlInput.focus(); return; }
+el.fetchBtn.addEventListener('click', async () => {
+  const url = el.urlInput.value.trim();
+  if (!url) { el.urlInput.focus(); return; }
 
   hideError();
-  hide(metaSection);
-  hide(progressSection);
-  hide(resultSection);
-  setLoading(fetchBtn, true);
+  hide(el.metaSection);
+  hide(el.progressSection);
+  hide(el.resultSection);
+  setLoading(el.fetchBtn, true);
 
   try {
-    const res = await fetch('/api/info', {
-      method: 'POST',
+    const res  = await fetch('/api/info', {
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      body:    JSON.stringify({ url }),
     });
-
     const data = await res.json();
 
     if (!res.ok) {
-      showError(data.error || 'Failed to fetch video info.');
+      showError(data.error || 'Failed to fetch info.');
       return;
     }
 
-    currentTitle = data.title;
+    state.title = data.title;
 
-    thumbnail.src = data.thumbnail || '';
-    thumbnail.alt = data.title;
-    videoTitle.textContent = data.title;
-    channelName.textContent = data.channel;
-
-    durationPill.textContent = data.duration;
-    show(durationPill);
+    el.thumbnail.src         = data.thumbnail || '';
+    el.thumbnail.alt         = data.title;
+    el.videoTitle.textContent  = data.title;
+    el.channelName.textContent = data.channel;
+    el.durationPill.textContent = data.duration;
 
     if (data.viewCount) {
-      viewsPill.textContent = `${data.viewCount} views`;
-      show(viewsPill);
+      el.viewsPill.textContent = `${data.viewCount} views`;
+      show(el.viewsPill);
     } else {
-      hide(viewsPill);
+      hide(el.viewsPill);
     }
 
     if (data.uploadDate) {
-      datePill.textContent = new Date(data.uploadDate).toLocaleDateString('en-US', {
+      el.datePill.textContent = new Date(data.uploadDate).toLocaleDateString('en-US', {
         year: 'numeric', month: 'short', day: 'numeric',
       });
-      show(datePill);
+      show(el.datePill);
     } else {
-      hide(datePill);
+      hide(el.datePill);
     }
 
-    // Populate video resolution options based on what this video actually supports
     renderResolutionOptions(data.availableResolutions || [360, 480, 720, 1080]);
-
-    show(metaSection);
-  } catch (err) {
+    show(el.metaSection);
+  } catch {
     showError('Network error — is the server running?');
   } finally {
-    setLoading(fetchBtn, false);
+    setLoading(el.fetchBtn, false);
   }
 });
 
 // ── Download ──────────────────────────────────────────────────────────────────
 
-downloadBtn.addEventListener('click', async () => {
-  const url        = urlInput.value.trim();
+el.downloadBtn.addEventListener('click', async () => {
+  const url = el.urlInput.value.trim();
   if (!url) return;
 
   const quality    = document.querySelector('input[name="quality"]:checked')?.value    ?? '192';
-  const resolution = document.querySelector('input[name="resolution"]:checked')?.value ?? '720';
+  const resolution = document.querySelector('input[name="resolution"]:checked')?.value ?? 'best';
 
   hideError();
-  hide(resultSection);
-  show(progressSection);
-  setLoading(downloadBtn, true);
+  hide(el.resultSection);
+  show(el.progressSection);
+  setLoading(el.downloadBtn, true);
   setIndeterminate('Starting download…');
-
-  abortController = new AbortController();
   stopEta();
-  cancelBtn.disabled = false;
+
+  state.abortController = new AbortController();
+  el.cancelBtn.disabled = false;
 
   try {
     const res = await fetch('/api/download', {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, mediaType, quality, resolution, title: currentTitle }),
-      signal: abortController.signal,
+      body:    JSON.stringify({ url, mediaType: state.mediaType, quality, resolution, title: state.title }),
+      signal:  state.abortController.signal,
     });
 
     if (!res.ok) {
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       showError(data.error || 'Download failed.');
-      hide(progressSection);
+      hide(el.progressSection);
       return;
     }
 
@@ -364,7 +399,9 @@ downloadBtn.addEventListener('click', async () => {
 
         case 'progress':
           if (event.phase === 'download') {
-            const phaseNote = mediaType === 'video' ? 'Downloading streams (video then audio)…' : 'Fetching audio…';
+            const phaseNote = state.mediaType === 'video'
+              ? 'Downloading streams (video then audio)…'
+              : 'Fetching audio…';
             setProgress(event.progress, event.subLabel || 'Downloading…', phaseNote, event.eta);
           } else if (event.phase === 'convert') {
             setIndeterminate(event.subLabel || 'Converting…');
@@ -375,66 +412,61 @@ downloadBtn.addEventListener('click', async () => {
 
         case 'done': {
           const ext      = event.ext || 'mp3';
-          const filename = event.filename || `${currentTitle || 'audio'}.${ext}`;
-          const safeFilename = filename.replace(/[<>:"/\\|?*]/g, '');
-          const baseName = safeFilename.replace(new RegExp(`\\.${ext}$`), '');
+          const filename = event.filename || `${state.title || 'download'}.${ext}`;
+          const safeName = filename.replace(/[<>:"/\\|?*]/g, '');
+          const baseName = safeName.replace(new RegExp(`\\.${ext}$`), '');
 
-          downloadLink.href = `/api/file/${event.fileId}?ext=${ext}&name=${encodeURIComponent(baseName)}`;
-          downloadLink.setAttribute('download', safeFilename);
-          resultFilename.textContent = safeFilename;
+          el.downloadLink.href = `/api/file/${event.fileId}?ext=${ext}&name=${encodeURIComponent(baseName)}`;
+          el.downloadLink.setAttribute('download', safeName);
+          el.resultFilename.textContent = safeName;
+          el.resultHeading.textContent  = ext === 'mp4' ? 'Your video is ready' : 'Your audio is ready';
 
-          hide(progressSection);
-          show(resultSection);
-          downloadLink.click();
+          hide(el.progressSection);
+          show(el.resultSection);
+          el.downloadLink.click();
           break;
         }
 
         case 'error':
           showError(event.message || 'Download failed.');
-          hide(progressSection);
+          hide(el.progressSection);
           break;
       }
     }
   } catch (err) {
-    hide(progressSection);
+    hide(el.progressSection);
     if (err.name !== 'AbortError') {
       showError('Connection lost — please try again.');
     }
   } finally {
-    setLoading(downloadBtn, false);
-    cancelBtn.disabled = true;
-    abortController = null;
+    setLoading(el.downloadBtn, false);
+    el.cancelBtn.disabled = true;
+    state.abortController = null;
     stopEta();
   }
 });
 
 // ── Cancel ────────────────────────────────────────────────────────────────────
 
-cancelBtn.addEventListener('click', () => {
-  if (abortController) {
-    cancelBtn.disabled = true;
-    abortController.abort();
+el.cancelBtn.addEventListener('click', () => {
+  if (state.abortController) {
+    el.cancelBtn.disabled = true;
+    state.abortController.abort();
   }
 });
 
 // ── Reset ─────────────────────────────────────────────────────────────────────
 
-resetBtn.addEventListener('click', () => {
-  urlInput.value = '';
-  clearBtn.hidden = true;
-  currentTitle = '';
-  mediaType = 'audio';
+el.resetBtn.addEventListener('click', () => {
+  el.urlInput.value  = '';
+  el.clearBtn.hidden = true;
+  state.title        = '';
 
-  fmtAudio.classList.add('active');
-  fmtVideo.classList.remove('active');
-  audioOptions.hidden = false;
-  videoOptions.hidden = true;
-  downloadBtnLabel.textContent = 'Download MP3';
-
-  hide(metaSection);
-  hide(progressSection);
-  hide(resultSection);
+  setMediaType('audio');
+  hide(el.metaSection);
+  hide(el.progressSection);
+  hide(el.resultSection);
   hideError();
 
-  urlInput.focus();
+  el.urlInput.focus();
 });

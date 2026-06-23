@@ -378,6 +378,7 @@ a:hover { text-decoration: underline; }
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
+  will-change: transform;
   flex-shrink: 0;
 }
 
@@ -685,6 +686,7 @@ a:hover { text-decoration: underline; }
 .progress-bar.indeterminate {
   width: 40% !important;
   animation: indeterminate 1.4s ease-in-out infinite;
+  will-change: transform;
 }
 
 @keyframes indeterminate {

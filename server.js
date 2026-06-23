@@ -1,41 +1,241 @@
 'use strict';
 
-const express = require('express');
-const rateLimit = require('express-rate-limit');
-const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+const express    = require('express');
+const rateLimit  = require('express-rate-limit');
+const { spawn }  = require('child_process');
+const path       = require('path');
+const fs         = require('fs');
+const fsp        = require('fs').promises;
 const { v4: uuidv4 } = require('uuid');
 
-// On Windows, winget packages may not be in PATH if the terminal pre-dates the install.
-// Inject known install locations so spawn() always finds yt-dlp and ffmpeg.
-const WINGET_BASE = path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages');
-const EXTRA_PATHS = [
-  path.join(WINGET_BASE, 'yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe'),
-  path.join(WINGET_BASE, 'yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe', 'ffmpeg-N-124716-g054dffd133-win64-gpl', 'bin'),
-  path.join(WINGET_BASE, 'Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe', 'ffmpeg-8.1.1-full_build', 'bin'),
-];
-const SPAWN_ENV = { ...process.env, PATH: `${process.env.PATH};${EXTRA_PATHS.join(';')}` };
+// ── Constants ─────────────────────────────────────────────────────────────────
 
+const PORT         = process.env.PORT || 3001;
+const TEMP_DIR     = path.join(__dirname, 'temp');
 const COOKIES_FILE = path.join(__dirname, 'cookies.txt');
-function cookiesArgs() {
+
+const VALID_AUDIO_QUALITIES = new Set(['128', '192', '320']);
+const VALID_RESOLUTIONS     = new Set(['360', '480', '720', '1080', '1440', '2160', 'best']);
+const STANDARD_HEIGHTS      = [360, 480, 720, 1080, 1440, 2160];
+const YT_EXTRACTOR_ARGS     = ['--extractor-args', 'youtube:player_client=android_creator'];
+const UUID_RE               = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const YT_HOST_RE            = /youtube\.com|youtu\.be/;
+
+// On Windows, winget-installed binaries may not be in the system PATH yet.
+// Scan the known winget package directories at startup and inject any that exist.
+// We scan versioned subdirs (e.g. ffmpeg-8.1.1-full_build) so this survives updates.
+const SPAWN_ENV = process.platform === 'win32' ? (() => {
+  const wingetBase = path.join(
+    process.env.LOCALAPPDATA || '',
+    'Microsoft', 'WinGet', 'Packages',
+  );
+
+  // Returns the `bin/` path inside a versioned subdirectory of a winget package dir.
+  // winget nests the actual files under a version folder (e.g. <pkg>/ffmpeg-8.x-…/bin).
+  function wingetBinDir(pkgDir) {
+    try {
+      const subs = fs.readdirSync(pkgDir);
+      for (const sub of subs) {
+        const candidate = path.join(pkgDir, sub, 'bin');
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    } catch { /* package not installed */ }
+    return null;
+  }
+
+  const extra = [
+    // yt-dlp (the exe sits directly in the package dir, no bin/ subfolder)
+    path.join(wingetBase, 'yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe'),
+    // ffmpeg — Gyan.FFmpeg winget source
+    wingetBinDir(path.join(wingetBase, 'Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe')),
+    // ffmpeg — yt-dlp.FFmpeg winget source (alternate publisher)
+    wingetBinDir(path.join(wingetBase, 'yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe')),
+  ].filter(Boolean);
+
+  return { ...process.env, PATH: [process.env.PATH, ...extra].join(';') };
+})() : process.env;
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function isValidUrl(url) {
+  if (typeof url !== 'string') return false;
+  try {
+    const { protocol } = new URL(url.trim());
+    return protocol === 'http:' || protocol === 'https:';
+  } catch { return false; }
+}
+
+function isYouTubeUrl(url) {
+  return YT_HOST_RE.test(url);
+}
+
+function sanitizeFilename(name) {
+  return (name || '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200) || 'download';
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return 'Unknown';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function cookieArgs() {
   return fs.existsSync(COOKIES_FILE) ? ['--cookies', COOKIES_FILE] : [];
 }
 
-const app = express();
-const PORT = process.env.PORT || 3001;
-const TEMP_DIR = path.join(__dirname, 'temp');
+// ── yt-dlp argument builders ──────────────────────────────────────────────────
 
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
+function buildInfoArgs(url) {
+  return [
+    '--dump-json',
+    '--no-playlist',
+    '--no-warnings',
+    ...(isYouTubeUrl(url) ? YT_EXTRACTOR_ARGS : []),
+    ...cookieArgs(),
+    url,
+  ];
 }
 
-// ── Middleware ──────────────────────────────────────────────────────────────
+function buildVideoFormat(resolution) {
+  if (resolution === 'best') {
+    return 'bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+  }
+  const h = resolution;
+  return [
+    `bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]`,
+    `bestvideo[height<=${h}]+bestaudio[ext=m4a]`,
+    `bestvideo[height<=${h}]+bestaudio`,
+    `best[height<=${h}]`,
+  ].join('/');
+}
+
+function buildDownloadArgs(url, { mediaType, quality, resolution, outputTemplate }) {
+  const base = [
+    '--no-playlist',
+    '--no-warnings',
+    ...(isYouTubeUrl(url) ? YT_EXTRACTOR_ARGS : []),
+    '--newline',
+    '-o', outputTemplate,
+    ...cookieArgs(),
+  ];
+  const media = mediaType === 'audio'
+    ? ['-x', '--audio-format', 'mp3', '--audio-quality', `${quality}K`]
+    : ['-f', buildVideoFormat(resolution), '--merge-output-format', 'mp4'];
+  return [...base, ...media, url];
+}
+
+// ── Video info parser ─────────────────────────────────────────────────────────
+
+function parseVideoInfo(info) {
+  const videoHeights = new Set(
+    (info.formats || [])
+      .filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
+      .map(f => f.height),
+  );
+  const availableResolutions = STANDARD_HEIGHTS.filter(r =>
+    [...videoHeights].some(h => Math.abs(h - r) <= 10),
+  );
+  const uploadDate = info.upload_date
+    ? `${info.upload_date.slice(0, 4)}-${info.upload_date.slice(4, 6)}-${info.upload_date.slice(6, 8)}`
+    : null;
+
+  return {
+    title:                info.title    || 'Unknown Title',
+    thumbnail:            info.thumbnail || '',
+    duration:             formatDuration(info.duration),
+    channel:              info.uploader || info.channel || 'Unknown Channel',
+    viewCount:            info.view_count ? info.view_count.toLocaleString() : null,
+    uploadDate,
+    availableResolutions: availableResolutions.length > 0 ? availableResolutions : [360, 480, 720, 1080],
+  };
+}
+
+// ── Progress line parser (closure tracks video/audio phase) ───────────────────
+
+function createProgressParser(mediaType) {
+  let videoStreamDone = false;
+
+  return function parseLine(line) {
+    if (!line.trim()) return null;
+
+    if (mediaType === 'video') {
+      if (line.includes('Downloading video')) { videoStreamDone = false; return null; }
+      if (line.includes('Downloading audio')) { videoStreamDone = true;  return null; }
+    }
+
+    const dlMatch = line.match(/\[download\]\s+(\d+\.?\d*)%/);
+    if (dlMatch) {
+      const raw      = parseFloat(dlMatch[1]);
+      const eta      = (line.match(/ETA\s+([\d:]+)/) || [])[1] || null;
+      const progress = mediaType === 'video'
+        ? (videoStreamDone ? 50 + raw / 2 : raw / 2)
+        : raw;
+      const subLabel = mediaType === 'video'
+        ? (videoStreamDone ? 'Downloading audio stream…' : 'Downloading video stream…')
+        : 'Downloading…';
+      return { type: 'progress', phase: 'download', progress, eta, subLabel };
+    }
+
+    if (line.includes('[Merger]')) {
+      return { type: 'progress', phase: 'merge', progress: 100, subLabel: 'Merging video + audio…' };
+    }
+    if (line.includes('[ExtractAudio]') || line.includes('[ffmpeg]')) {
+      return { type: 'progress', phase: 'convert', progress: 100, subLabel: 'Converting…' };
+    }
+    return null;
+  };
+}
+
+// ── SSE helpers ───────────────────────────────────────────────────────────────
+
+function initSSE(res) {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+}
+
+function sse(res, data) {
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+// ── Temp file cleanup ─────────────────────────────────────────────────────────
+
+async function cleanTempDir() {
+  const maxAge = 60 * 60 * 1000; // 1 hour
+  try {
+    const files = await fsp.readdir(TEMP_DIR);
+    await Promise.all(files.map(async file => {
+      const fp = path.join(TEMP_DIR, file);
+      try {
+        const { mtimeMs } = await fsp.stat(fp);
+        if (Date.now() - mtimeMs > maxAge) await fsp.unlink(fp);
+      } catch { /* already gone */ }
+    }));
+  } catch { /* dir missing */ }
+}
+
+setInterval(cleanTempDir, 60 * 60 * 1000);
+
+// ── Express setup ─────────────────────────────────────────────────────────────
+
+const app = express();
 
 app.use(express.json({ limit: '10kb' }));
 
-// Password protection — set AUTH_USER and AUTH_PASS env vars to enable
 if (process.env.AUTH_USER && process.env.AUTH_PASS) {
   const basicAuth = require('express-basic-auth');
   app.use(basicAuth({
@@ -48,69 +248,16 @@ if (process.env.AUTH_USER && process.env.AUTH_PASS) {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20,
+const limiter = (max, windowMs) => rateLimit({
+  windowMs, max,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many requests — please wait a few minutes and try again.' },
+  message: { error: 'Too many requests — please wait and try again.' },
 });
 
-const downloadLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Download limit reached for this hour. Please try again later.' },
-});
+// ── Cookie routes ─────────────────────────────────────────────────────────────
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-const YT_URL_RE = /^https?:\/\/(www\.)?(youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\/)[\w-]{11}/;
-
-function isValidYouTubeUrl(url) {
-  return typeof url === 'string' && YT_URL_RE.test(url.trim());
-}
-
-function sanitizeFilename(name) {
-  return name
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 200) || 'audio';
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return 'Unknown';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-function sendSSE(res, data) {
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
-}
-
-// ── Periodic temp-file cleanup (files older than 1 hour) ─────────────────────
-
-setInterval(() => {
-  const maxAge = 60 * 60 * 1000;
-  fs.readdir(TEMP_DIR, (err, files) => {
-    if (err) return;
-    for (const file of files) {
-      const fp = path.join(TEMP_DIR, file);
-      fs.stat(fp, (e, stat) => {
-        if (!e && Date.now() - stat.mtimeMs > maxAge) fs.unlink(fp, () => {});
-      });
-    }
-  });
-}, 60 * 60 * 1000);
-
-// ── Cookie Management ────────────────────────────────────────────────────────
-
-app.get('/api/cookies/status', (req, res) => {
+app.get('/api/cookies/status', (_req, res) => {
   res.json({ active: fs.existsSync(COOKIES_FILE) });
 });
 
@@ -127,7 +274,7 @@ app.post('/api/cookies', express.text({ limit: '2mb', type: 'text/plain' }), (re
   }
 });
 
-app.delete('/api/cookies', (req, res) => {
+app.delete('/api/cookies', (_req, res) => {
   try {
     if (fs.existsSync(COOKIES_FILE)) fs.unlinkSync(COOKIES_FILE);
     res.json({ ok: true });
@@ -136,243 +283,138 @@ app.delete('/api/cookies', (req, res) => {
   }
 });
 
-// ── Routes ───────────────────────────────────────────────────────────────────
+// ── POST /api/info ────────────────────────────────────────────────────────────
 
-// POST /api/info — fetch video metadata
-app.post('/api/info', apiLimiter, (req, res) => {
+app.post('/api/info', limiter(20, 15 * 60 * 1000), (req, res) => {
   const url = (req.body.url || '').trim();
 
-  if (!isValidYouTubeUrl(url)) {
-    return res.status(400).json({ error: 'Invalid YouTube URL.' });
+  if (!isValidUrl(url)) {
+    return res.status(400).json({ error: 'Invalid URL.' });
   }
 
-  const proc = spawn('yt-dlp', [
-    '--dump-json',
-    '--no-playlist',
-    '--no-warnings',
-    '--extractor-args', 'youtube:player_client=android_creator',
-    ...cookiesArgs(),
-    url,
-  ], { env: SPAWN_ENV });
-
+  const proc = spawn('yt-dlp', buildInfoArgs(url), { env: SPAWN_ENV });
   let stdout = '';
   let stderr = '';
 
   proc.stdout.on('data', chunk => { stdout += chunk; });
   proc.stderr.on('data', chunk => { stderr += chunk; });
 
+  proc.on('error', err => {
+    if (res.headersSent) return;
+    const msg = err.code === 'ENOENT'
+      ? 'yt-dlp is not installed. See README for setup instructions.'
+      : 'Failed to start yt-dlp.';
+    res.status(500).json({ error: msg });
+  });
+
   proc.on('close', code => {
     if (res.headersSent) return;
     if (code !== 0) {
-      console.error('[/api/info] yt-dlp exit code:', code, '\nstderr:', stderr.slice(0, 500));
-      const msg = stderr.includes('Video unavailable')
-        ? 'This video is unavailable.'
-        : stderr.includes('Private video')
-        ? 'This video is private.'
-        : 'Could not fetch video info. Check the URL and try again.';
+      console.error('[/api/info] exit', code, stderr.slice(0, 400));
+      const msg = stderr.includes('Video unavailable') ? 'This video is unavailable.'
+        : stderr.includes('Private video')             ? 'This video is private.'
+        : 'Could not fetch info — check the URL and try again.';
       return res.status(400).json({ error: msg });
     }
-
     try {
-      const info = JSON.parse(stdout);
-
-      // Derive available video resolutions from the format list
-      const STANDARD_HEIGHTS = [360, 480, 720, 1080, 1440, 2160];
-      const videoHeights = new Set(
-        (info.formats || [])
-          .filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
-          .map(f => f.height)
-      );
-      const availableResolutions = STANDARD_HEIGHTS.filter(r =>
-        [...videoHeights].some(h => Math.abs(h - r) <= 10)
-      );
-
-      res.json({
-        title: info.title || 'Unknown Title',
-        thumbnail: info.thumbnail || '',
-        duration: formatDuration(info.duration),
-        durationRaw: info.duration || 0,
-        channel: info.uploader || info.channel || 'Unknown Channel',
-        viewCount: info.view_count ? info.view_count.toLocaleString() : null,
-        uploadDate: info.upload_date
-          ? `${info.upload_date.slice(0, 4)}-${info.upload_date.slice(4, 6)}-${info.upload_date.slice(6, 8)}`
-          : null,
-        filesize: info.filesize_approx || null,
-        availableResolutions: availableResolutions.length > 0
-          ? availableResolutions
-          : [360, 480, 720, 1080], // fallback if formats not exposed
-      });
+      res.json(parseVideoInfo(JSON.parse(stdout)));
     } catch (e) {
-      console.error('[/api/info] JSON parse error:', e.message, '\nstdout preview:', stdout.slice(0, 200));
+      console.error('[/api/info] parse error:', e.message);
       res.status(500).json({ error: 'Failed to parse video information.' });
-    }
-  });
-
-  proc.on('error', err => {
-    console.error('[/api/info] spawn error:', err.code, err.message);
-    if (res.headersSent) return;
-    if (err.code === 'ENOENT') {
-      res.status(500).json({ error: 'yt-dlp is not installed. See README for setup instructions.' });
-    } else {
-      res.status(500).json({ error: 'Internal server error.' });
     }
   });
 });
 
-// POST /api/download — download + convert, stream progress via SSE
-app.post('/api/download', downloadLimiter, (req, res) => {
-  const url        = (req.body.url || '').trim();
+// ── POST /api/download ────────────────────────────────────────────────────────
+
+app.post('/api/download', limiter(10, 60 * 60 * 1000), (req, res) => {
+  const url        = (req.body.url        || '').trim();
   const mediaType  = req.body.mediaType === 'video' ? 'video' : 'audio';
   const quality    = req.body.quality    || '192';
-  const resolution = req.body.resolution || '720';
-  const titleHint  = sanitizeFilename(req.body.title || 'audio');
+  const resolution = req.body.resolution || 'best';
+  const titleHint  = sanitizeFilename(req.body.title);
 
-  if (!isValidYouTubeUrl(url)) {
-    return res.status(400).json({ error: 'Invalid YouTube URL.' });
+  if (!isValidUrl(url)) {
+    return res.status(400).json({ error: 'Invalid URL.' });
+  }
+  if (mediaType === 'audio' && !VALID_AUDIO_QUALITIES.has(quality)) {
+    return res.status(400).json({ error: `Audio quality must be one of: ${[...VALID_AUDIO_QUALITIES].join(', ')}.` });
+  }
+  if (mediaType === 'video' && !VALID_RESOLUTIONS.has(resolution)) {
+    return res.status(400).json({ error: `Resolution must be one of: ${[...VALID_RESOLUTIONS].join(', ')}.` });
   }
 
-  if (mediaType === 'audio' && !new Set(['128', '192', '320']).has(quality)) {
-    return res.status(400).json({ error: 'Quality must be 128, 192, or 320.' });
-  }
-  if (mediaType === 'video' && !new Set(['360', '480', '720', '1080', '1440', '2160', 'best']).has(resolution)) {
-    return res.status(400).json({ error: 'Resolution must be 360, 480, 720, 1080, 1440, 2160, or best.' });
-  }
-
-  const ext = mediaType === 'video' ? 'mp4' : 'mp3';
+  const ext            = mediaType === 'video' ? 'mp4' : 'mp3';
   const fileId         = uuidv4();
   const outputTemplate = path.join(TEMP_DIR, `${fileId}.%(ext)s`);
 
-  // SSE setup
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
+  initSSE(res);
+  sse(res, { type: 'start' });
 
-  sendSSE(res, { type: 'start', message: 'Starting download…' });
-
-  const baseArgs = [
-    '--no-playlist',
-    '--no-warnings',
-    '--extractor-args', 'youtube:player_client=android_creator',
-    '--newline',
-    '-o', outputTemplate,
-    ...cookiesArgs(),
-  ];
-
-  // Build yt-dlp format string for video.
-  // Prefer MP4 video + M4A audio so ffmpeg can stream-copy without re-encoding (faster, lossless).
-  // "best" = no height cap — yt-dlp picks the highest quality the video offers (up to 4K/8K).
-  const videoFormat = resolution === 'best'
-    ? 'bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
-    : `bestvideo[height<=${resolution}]+bestaudio[ext=m4a]/bestvideo[height<=${resolution}]+bestaudio/best[height<=${resolution}]`;
-
-  const mediaArgs = mediaType === 'audio'
-    ? ['-x', '--audio-format', 'mp3', '--audio-quality', `${quality}K`]
-    : ['-f', videoFormat, '--merge-output-format', 'mp4'];
-
-  const proc = spawn('yt-dlp', [...baseArgs, ...mediaArgs, url], { env: SPAWN_ENV });
-  let killed = false;
-
-  // For video, yt-dlp downloads video stream then audio stream separately before merging.
-  // Track which stream is active so we can split progress across two 50% halves.
-  let videoStreamDone = false;
+  const args    = buildDownloadArgs(url, { mediaType, quality, resolution, outputTemplate });
+  const proc    = spawn('yt-dlp', args, { env: SPAWN_ENV });
+  const parseLine = createProgressParser(mediaType);
+  let killed    = false;
 
   proc.stdout.on('data', chunk => {
-    const lines = chunk.toString().split('\n');
-    for (const line of lines) {
-      if (!line.trim()) continue;
-
-      if (mediaType === 'video') {
-        if (line.includes('Downloading video')) { videoStreamDone = false; continue; }
-        if (line.includes('Downloading audio')) { videoStreamDone = true;  continue; }
-      }
-
-      const dlMatch = line.match(/\[download\]\s+(\d+\.?\d*)%/);
-      if (dlMatch) {
-        const raw = parseFloat(dlMatch[1]);
-        const eta = (line.match(/ETA\s+([\d:]+)/) || [])[1] || null;
-
-        // Video has two download streams; map each to a 0-50 / 50-100 window
-        const progress = mediaType === 'video'
-          ? (videoStreamDone ? 50 + raw / 2 : raw / 2)
-          : raw;
-
-        const subLabel = mediaType === 'video'
-          ? (videoStreamDone ? 'Downloading audio stream…' : 'Downloading video stream…')
-          : 'Downloading…';
-
-        sendSSE(res, { type: 'progress', phase: 'download', progress, eta, subLabel });
-        continue;
-      }
-
-      if (line.includes('[Merger]')) {
-        sendSSE(res, { type: 'progress', phase: 'merge', progress: 100, subLabel: 'Merging video + audio…' });
-        continue;
-      }
-
-      if (line.includes('[ExtractAudio]') || line.includes('[ffmpeg]')) {
-        sendSSE(res, { type: 'progress', phase: 'convert', progress: 100, subLabel: 'Converting to MP3…' });
-        continue;
-      }
+    for (const line of chunk.toString().split('\n')) {
+      const event = parseLine(line);
+      if (event) sse(res, event);
     }
   });
 
   proc.stderr.on('data', chunk => {
-    console.error('[yt-dlp stderr]', chunk.toString().trimEnd());
+    console.error('[yt-dlp]', chunk.toString().trimEnd());
   });
 
   proc.on('error', err => {
-    if (!killed) {
-      const msg = err.code === 'ENOENT'
-        ? 'yt-dlp is not installed. See README for setup instructions.'
-        : 'Failed to start download process.';
-      sendSSE(res, { type: 'error', message: msg });
-      res.end();
-    }
+    if (killed) return;
+    const msg = err.code === 'ENOENT'
+      ? 'yt-dlp is not installed. See README for setup instructions.'
+      : 'Failed to start download process.';
+    sse(res, { type: 'error', message: msg });
+    res.end();
   });
 
   proc.on('close', code => {
     if (killed) return;
-
     if (code !== 0) {
-      sendSSE(res, { type: 'error', message: 'Download failed. The video may be unavailable or geo-restricted.' });
+      sse(res, { type: 'error', message: 'Download failed. The media may be unavailable or geo-restricted.' });
       res.end();
       return;
     }
 
-    const outFiles = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(fileId) && f.endsWith(`.${ext}`));
-    if (outFiles.length === 0) {
-      sendSSE(res, { type: 'error', message: `Processing failed — ${ext.toUpperCase()} output not found.` });
+    const outFile = fs.readdirSync(TEMP_DIR).find(f => f.startsWith(fileId) && f.endsWith(`.${ext}`));
+    if (!outFile) {
+      sse(res, { type: 'error', message: `Processing failed — ${ext.toUpperCase()} output not found.` });
       res.end();
       return;
     }
 
-    sendSSE(res, { type: 'done', fileId, ext, filename: `${titleHint}.${ext}`, message: 'Ready!' });
+    sse(res, { type: 'done', fileId, ext, filename: `${titleHint}.${ext}` });
     res.end();
   });
 
   req.on('close', () => {
-    if (!proc.killed) {
-      killed = true;
-      proc.kill('SIGTERM');
-      fs.readdir(TEMP_DIR, (err, files) => {
-        if (err) return;
-        for (const f of files) {
-          if (f.startsWith(fileId)) fs.unlink(path.join(TEMP_DIR, f), () => {});
-        }
-      });
-    }
+    if (proc.killed) return;
+    killed = true;
+    proc.kill('SIGTERM');
+    fsp.readdir(TEMP_DIR)
+      .then(files => Promise.all(
+        files.filter(f => f.startsWith(fileId)).map(f => fsp.unlink(path.join(TEMP_DIR, f)).catch(() => {})),
+      ))
+      .catch(() => {});
   });
 });
 
-// GET /api/file/:fileId — serve the MP3 and clean up
+// ── GET /api/file/:fileId ─────────────────────────────────────────────────────
+
 app.get('/api/file/:fileId', (req, res) => {
   const { fileId } = req.params;
-  const rawName = req.query.name ? sanitizeFilename(req.query.name) : 'audio';
-  const ext     = req.query.ext === 'mp4' ? 'mp4' : 'mp3';
+  const ext        = req.query.ext === 'mp4' ? 'mp4' : 'mp3';
+  const rawName    = req.query.name ? sanitizeFilename(req.query.name) : 'download';
 
-  if (!/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/.test(fileId)) {
+  if (!UUID_RE.test(fileId)) {
     return res.status(400).json({ error: 'Invalid file ID.' });
   }
 
@@ -382,31 +424,26 @@ app.get('/api/file/:fileId', (req, res) => {
     return res.status(404).json({ error: 'File not found or already downloaded.' });
   }
 
-  // HTTP headers are ASCII-only; use RFC 5987 encoding for non-ASCII filenames (e.g. Thai, Japanese)
-  const contentType   = ext === 'mp4' ? 'video/mp4' : 'audio/mpeg';
-  const asciiFallback = rawName.replace(/[^\x20-\x7e]/g, '').trim() || 'audio';
+  // HTTP headers must be ASCII; RFC 5987 encodes the full name for modern browsers
+  const asciiFallback = rawName.replace(/[^\x20-\x7e]/g, '').trim() || 'download';
   const encodedName   = encodeURIComponent(`${rawName}.${ext}`);
+  const contentType   = ext === 'mp4' ? 'video/mp4' : 'audio/mpeg';
+
   res.setHeader('Content-Type', contentType);
   res.setHeader(
     'Content-Disposition',
-    `attachment; filename="${asciiFallback}.${ext}"; filename*=UTF-8''${encodedName}`
+    `attachment; filename="${asciiFallback}.${ext}"; filename*=UTF-8''${encodedName}`,
   );
 
   const stream = fs.createReadStream(filePath);
   stream.pipe(res);
-
-  stream.on('close', () => {
-    fs.unlink(filePath, () => {});
-  });
-
-  stream.on('error', () => {
-    if (!res.headersSent) res.status(500).json({ error: 'Failed to stream file.' });
-  });
+  stream.on('close', () => fsp.unlink(filePath).catch(() => {}));
+  stream.on('error', () => { if (!res.headersSent) res.status(500).end(); });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`\n  YouTube MP3 Downloader`);
-  console.log(`  Running at http://localhost:${PORT}\n`);
+  console.log(`\n  MP3ify — Media Downloader`);
+  console.log(`  http://localhost:${PORT}\n`);
 });

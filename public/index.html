@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>YouTube MP3 Downloader</title>
+  <title>MP3ify — Media Downloader</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -21,7 +21,7 @@
       <div class="header-actions">
         <div class="cookie-ctrl" id="cookieCtrl">
           <input type="file" id="cookieFileInput" accept=".txt" class="cookie-file-input" />
-          <label class="cookie-btn" id="cookieUploadBtn" for="cookieFileInput" title="Upload YouTube cookies for HD/4K downloads">
+          <label class="cookie-btn" id="cookieUploadBtn" for="cookieFileInput" title="Upload cookies.txt for sites that require login">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             Cookies
           </label>
@@ -50,8 +50,8 @@
 
   <main class="main">
     <section class="hero">
-      <h1 class="hero-title">Download YouTube Audio</h1>
-      <p class="hero-subtitle">Convert any YouTube video to high-quality MP3 — locally on your machine.</p>
+      <h1 class="hero-title">Download Audio &amp; Video</h1>
+      <p class="hero-subtitle">Paste a URL from YouTube, Vimeo, SoundCloud and more — save as MP3 or MP4.</p>
     </section>
 
     <div class="card" id="mainCard">
@@ -66,10 +66,10 @@
             type="url"
             id="urlInput"
             class="url-input"
-            placeholder="https://www.youtube.com/watch?v=..."
+            placeholder="https://youtube.com/watch?v=... or any supported URL"
             autocomplete="off"
             spellcheck="false"
-            aria-label="YouTube URL"
+            aria-label="Video URL"
           />
           <button class="clear-btn" id="clearBtn" aria-label="Clear input" hidden>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
@@ -196,7 +196,7 @@
             </svg>
           </div>
           <div class="result-text">
-            <h3>Your MP3 is ready</h3>
+            <h3 id="resultHeading">Your file is ready</h3>
             <p id="resultFilename" class="result-filename"></p>
           </div>
           <a id="downloadLink" class="btn btn-success" href="#" download>
@@ -208,7 +208,7 @@
             Save File
           </a>
         </div>
-        <button class="btn btn-ghost" id="resetBtn">Convert another video</button>
+        <button class="btn btn-ghost" id="resetBtn">Download another</button>
       </div>
     </div>
 
@@ -218,9 +218,8 @@
         <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
       </svg>
       <p>
-        <strong>Personal use only.</strong> This tool is intended for downloading non-copyrighted or Creative Commons
-        licensed content. Downloading copyrighted material may violate
-        <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">YouTube's Terms of Service</a>
+        <strong>Personal use only.</strong> Only download content you have the right to download.
+        Downloading copyrighted material may violate the terms of service of the source platform
         and applicable copyright law. You are solely responsible for how you use this tool.
       </p>
     </div>
