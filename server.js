@@ -130,6 +130,7 @@ function buildVideoFormat(resolution) {
     `bestvideo[height<=${h}]+bestaudio[ext=m4a]`,
     `bestvideo[height<=${h}]+bestaudio`,
     `best[height<=${h}]`,
+    'best',
   ].join('/');
 }
 
@@ -144,7 +145,7 @@ function buildDownloadArgs(url, { mediaType, quality, resolution, outputTemplate
   ];
   const media = mediaType === 'audio'
     ? ['-x', '--audio-format', 'mp3', '--audio-quality', `${quality}K`]
-    : ['-f', buildVideoFormat(resolution), '--merge-output-format', 'mp4'];
+    : ['-f', buildVideoFormat(resolution), '--merge-output-format', 'mp4', '--remux-video', 'mp4'];
   return [...base, ...media, url];
 }
 
@@ -396,14 +397,16 @@ app.post('/api/download', limiter(10, 60 * 60 * 1000), (req, res) => {
       return;
     }
 
-    const outFile = fs.readdirSync(TEMP_DIR).find(f => f.startsWith(fileId) && f.endsWith(`.${ext}`));
+    const allFiles = fs.readdirSync(TEMP_DIR).filter(f => f.startsWith(fileId));
+    const outFile  = allFiles.find(f => f.endsWith(`.${ext}`)) || allFiles[0];
+    const actualExt = outFile ? path.extname(outFile).slice(1) : ext;
     if (!outFile) {
       sse(res, { type: 'error', message: `Processing failed — ${ext.toUpperCase()} output not found.` });
       res.end();
       return;
     }
 
-    sse(res, { type: 'done', fileId, ext, filename: `${titleHint}.${ext}` });
+    sse(res, { type: 'done', fileId, ext: actualExt, filename: `${titleHint}.${actualExt}` });
     res.end();
   });
 
@@ -421,9 +424,13 @@ app.post('/api/download', limiter(10, 60 * 60 * 1000), (req, res) => {
 
 // ── GET /api/file/:fileId ─────────────────────────────────────────────────────
 
+const CONTENT_TYPES = { mp4: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska', mp3: 'audio/mpeg', m4a: 'audio/mp4' };
+const VALID_FILE_EXTS = new Set(Object.keys(CONTENT_TYPES));
+
 app.get('/api/file/:fileId', (req, res) => {
   const { fileId } = req.params;
-  const ext        = req.query.ext === 'mp4' ? 'mp4' : 'mp3';
+  const reqExt     = req.query.ext;
+  const ext        = VALID_FILE_EXTS.has(reqExt) ? reqExt : 'mp4';
   const rawName    = req.query.name ? sanitizeFilename(req.query.name) : 'download';
 
   if (!UUID_RE.test(fileId)) {
@@ -439,7 +446,7 @@ app.get('/api/file/:fileId', (req, res) => {
   // HTTP headers must be ASCII; RFC 5987 encodes the full name for modern browsers
   const asciiFallback = rawName.replace(/[^\x20-\x7e]/g, '').trim() || 'download';
   const encodedName   = encodeURIComponent(`${rawName}.${ext}`);
-  const contentType   = ext === 'mp4' ? 'video/mp4' : 'audio/mpeg';
+  const contentType   = CONTENT_TYPES[ext] || 'application/octet-stream';
 
   res.setHeader('Content-Type', contentType);
   res.setHeader(
