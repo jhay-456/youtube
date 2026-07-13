@@ -76,6 +76,9 @@ const el = {
 
   // Theme
   themeToggle: document.getElementById('themeToggle'),
+
+  // Auth
+  logoutBtn: document.getElementById('logoutBtn'),
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -109,6 +112,23 @@ el.themeToggle.addEventListener('click', () => {
   const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('theme', next);
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+async function refreshAuthStatus() {
+  try {
+    const res = await fetch('/api/auth/status');
+    const { enabled } = await res.json();
+    el.logoutBtn.hidden = !enabled;
+  } catch { /* server may not be ready yet */ }
+}
+
+refreshAuthStatus();
+
+el.logoutBtn.addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => {});
+  window.location.href = '/login.html';
 });
 
 // ── Cookie management ─────────────────────────────────────────────────────────

@@ -763,6 +763,45 @@ a:hover { text-decoration: underline; }
 .disclaimer a { color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; }
 .disclaimer a:hover { color: var(--text); }
 
+/* ── Login Page ───────────────────────────────────────────────────────────── */
+
+.login-main {
+  max-width: 380px;
+  min-height: calc(100vh - 73px);
+  justify-content: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.login-heading { text-align: center; }
+
+.login-title {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.login-subtitle {
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-input { padding: 12px 14px; }
+
 /* ── Utilities ────────────────────────────────────────────────────────────── */
 
 [hidden] { display: none !important; }

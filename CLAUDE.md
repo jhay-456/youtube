@@ -9,7 +9,7 @@ Outputs MP3 (audio) or MP4 (video).
 ## Stack
 
 - **Backend**: Node.js ≥18, Express 4
-- **npm packages**: `express`, `express-rate-limit`, `express-basic-auth`, `uuid`
+- **npm packages**: `express`, `express-rate-limit`, `uuid`
 - **System binaries**: `yt-dlp` (download engine), `ffmpeg` (audio/video conversion)
 - **Frontend**: Vanilla HTML + CSS + JS — no build step, no framework
 
@@ -19,6 +19,8 @@ Outputs MP3 (audio) or MP4 (video).
 server.js              Express server — all API routes live here
 public/
   index.html           Single-page UI
+  login.html            Login page, served when AUTH_USER/AUTH_PASS are set
+  login.js              Login form logic (theme toggle + POST /api/login)
   style.css            CSS custom properties, dark/light theme via [data-theme]
   app.js               All frontend logic; SSE stream parsed via fetch ReadableStream
 Dockerfile             Production container (installs yt-dlp + ffmpeg on Debian slim)
@@ -42,6 +44,9 @@ npm run dev     # nodemon auto-restart (needs nodemon devDependency)
 | `GET`  | `/api/cookies/status` | Check if a cookies.txt is active |
 | `POST` | `/api/cookies` | Upload a Netscape-format cookies.txt (text/plain body) |
 | `DELETE` | `/api/cookies` | Remove the active cookies.txt |
+| `GET`  | `/api/auth/status` | `{ enabled }` — whether login is required (drives the logout button) |
+| `POST` | `/api/login` | `{ username, password }` → sets session cookie or 401 |
+| `POST` | `/api/logout` | Clears the session cookie |
 
 ### SSE event shapes (`/api/download`)
 
@@ -71,8 +76,9 @@ npm run dev     # nodemon auto-restart (needs nodemon devDependency)
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PORT` | `3001` | HTTP listen port |
-| `AUTH_USER` | — | Basic auth username (both must be set to enable auth) |
-| `AUTH_PASS` | — | Basic auth password |
+| `AUTH_USER` | — | Login username (both `AUTH_USER` and `AUTH_PASS` must be set to require login) |
+| `AUTH_PASS` | — | Login password |
+| `SESSION_SECRET` | random, generated at boot | HMAC secret for signing session cookies. Set this in production — without it, every restart/redeploy invalidates all sessions. |
 
 ## Key design decisions
 
@@ -95,6 +101,8 @@ npm run dev     # nodemon auto-restart (needs nodemon devDependency)
 **Windows PATH injection** — on `process.platform === 'win32'`, `SPAWN_ENV` dynamically scans the winget packages directory to find yt-dlp and ffmpeg at startup (handles version upgrades without hardcoded version strings). On macOS/Linux, `process.env` is used as-is.
 
 **Cookie management** — `cookies.txt` (Netscape format) is saved to the project root. `cookieArgs()` returns `['--cookies', COOKIES_FILE]` when the file exists, or `[]` when it doesn't. Useful for member-only or login-gated content.
+
+**Login / session auth** — when `AUTH_USER` + `AUTH_PASS` are both set, a middleware gate (`AUTH_ENABLED` block in `server.js`) protects every route except `PUBLIC_PATHS` (`login.html`, `login.js`, `style.css`, `favicon.ico`, `/api/login`, `/api/auth/status`). Unauthenticated `GET` requests that accept HTML are redirected to `/login.html?next=<original path>`; everything else gets a `401`. Sessions are a signed cookie (`mp3ify_session=<expiry>.<hmac>`), not a server-side store — `signSession()`/`hasValidSession()` use `crypto.createHmac` with `SESSION_SECRET`, so any process replica can validate a cookie without shared state. This replaced HTTP Basic Auth (browser-native popup) so a real, brandable login page could be shown and so the "private deploy" flow doesn't leak credentials into browser autofill prompts tied to the raw URL.
 
 **UUID path traversal prevention** — `fileId` is validated against `UUID_RE` before constructing any file path.
 

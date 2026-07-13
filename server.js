@@ -6,6 +6,7 @@ const { spawn }  = require('child_process');
 const path       = require('path');
 const fs         = require('fs');
 const fsp        = require('fs').promises;
+const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -20,6 +21,14 @@ const STANDARD_HEIGHTS      = [360, 480, 720, 1080, 1440, 2160];
 const YT_EXTRACTOR_ARGS     = ['--extractor-args', 'youtube:player_client=android_creator'];
 const UUID_RE               = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const YT_HOST_RE            = /youtube\.com|youtu\.be/;
+
+const SESSION_COOKIE  = 'mp3ify_session';
+const SESSION_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Falls back to a random secret generated at boot if unset — sessions just won't
+// survive a restart/redeploy. Set SESSION_SECRET in production to avoid that.
+const SESSION_SECRET  = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// Paths reachable without a session — the login page itself, its assets, and the login API.
+const PUBLIC_PATHS    = new Set(['/login.html', '/login.js', '/style.css', '/favicon.ico', '/api/login', '/api/auth/status']);
 
 // On Windows, winget-installed binaries may not be in the system PATH yet.
 // Scan the known winget package directories at startup and inject any that exist.
@@ -93,6 +102,60 @@ function formatDuration(seconds) {
 
 function cookieArgs() {
   return fs.existsSync(COOKIES_FILE) ? ['--cookies', COOKIES_FILE] : [];
+}
+
+// ── Session auth (signed cookie, no server-side store) ────────────────────────
+
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(String(a ?? ''));
+  const bufB = Buffer.from(String(b ?? ''));
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA); // keep timing constant even on length mismatch
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function signSession(expiry) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(String(expiry)).digest('hex');
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  const out = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return out;
+}
+
+function hasValidSession(req) {
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return false;
+  const [expiryStr, sig] = token.split('.');
+  const expiry = Number(expiryStr);
+  if (!expiry || !sig || Date.now() > expiry) return false;
+  const sigBuf = Buffer.from(sig, 'hex');
+  const expBuf = Buffer.from(signSession(expiry), 'hex');
+  return sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
+}
+
+function setSessionCookie(req, res) {
+  const expiry  = Date.now() + SESSION_MAX_AGE;
+  const token   = `${expiry}.${signSession(expiry)}`;
+  const secure  = req.secure ? '; Secure' : '';
+  res.setHeader(
+    'Set-Cookie',
+    `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_MAX_AGE / 1000)}${secure}`,
+  );
+}
+
+function clearSessionCookie(req, res) {
+  const secure = req.secure ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
 }
 
 // ── yt-dlp argument builders ──────────────────────────────────────────────────
@@ -247,19 +310,53 @@ setInterval(cleanTempDir, 60 * 60 * 1000);
 
 const app = express();
 
+app.set('trust proxy', 1); // needed for req.secure behind a reverse proxy (Render, Fly, etc.)
 app.use(express.json({ limit: '10kb' }));
 
-if (process.env.AUTH_USER && process.env.AUTH_PASS) {
-  const basicAuth = require('express-basic-auth');
-  app.use(basicAuth({
-    users: { [process.env.AUTH_USER]: process.env.AUTH_PASS },
-    challenge: true,
-    realm: 'MP3ify',
-  }));
-  console.log('  Basic auth enabled');
+const AUTH_ENABLED = Boolean(process.env.AUTH_USER && process.env.AUTH_PASS);
+
+if (AUTH_ENABLED) {
+  app.use((req, res, next) => {
+    if (PUBLIC_PATHS.has(req.path) || hasValidSession(req)) return next();
+    if (req.method === 'GET' && req.accepts(['html', 'json']) === 'html') {
+      const next = encodeURIComponent(req.originalUrl);
+      return res.redirect(`/login.html?next=${next}`);
+    }
+    res.status(401).json({ error: 'Unauthorized' });
+  });
+  console.log('  Login required (session auth enabled)');
 }
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts — please wait and try again.' },
+});
+
+app.post('/api/login', loginLimiter, (req, res) => {
+  if (!AUTH_ENABLED) return res.status(404).json({ error: 'Login is not enabled.' });
+  const { username, password } = req.body || {};
+  const validUser = timingSafeEqualStr(username, process.env.AUTH_USER);
+  const validPass = timingSafeEqualStr(password, process.env.AUTH_PASS);
+  if (!validUser || !validPass) {
+    return res.status(401).json({ error: 'Invalid username or password.' });
+  }
+  setSessionCookie(req, res);
+  res.json({ ok: true });
+});
+
+app.post('/api/logout', (req, res) => {
+  clearSessionCookie(req, res);
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/status', (_req, res) => {
+  res.json({ enabled: AUTH_ENABLED });
+});
 
 const limiter = (max, windowMs) => rateLimit({
   windowMs, max,
