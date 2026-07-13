@@ -1,13 +1,18 @@
 FROM node:20-slim
 
-# Install ffmpeg and curl
+# ffmpeg: media conversion. curl + ca-certificates: fetch yt-dlp over HTTPS below.
+# python3: the "yt-dlp" release asset is a zipapp that needs a python3 interpreter
+# on PATH — it is not a fully standalone binary.
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
+    ca-certificates \
+    python3 \
     --no-install-recommends \
+  && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp (standalone binary, no Python needed)
+# Install yt-dlp
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
     -o /usr/local/bin/yt-dlp \
   && chmod +x /usr/local/bin/yt-dlp
